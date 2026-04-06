@@ -252,7 +252,7 @@ def get_periodo_info(date_ranges):
     all_maxs = []
     
     # Prioriza ocupacao e nao_regencia (dados reais do mês)
-    # Calendário é apenas referência anual
+    # Calendário é apenas referência anual e NÃO deve ser usado para definir o período
     priority_sources = ['ocupacao', 'nao_regencia', 'faltas']
     
     for source in priority_sources:
@@ -263,7 +263,7 @@ def get_periodo_info(date_ranges):
             if 'max' in range_data and pd.notna(range_data['max']):
                 all_maxs.append(range_data['max'])
     
-    # Se não houver dados prioritários, usa calendário
+    # Se não houver dados prioritários, usa calendário como fallback
     if not all_mins and 'calendario' in date_ranges:
         range_data = date_ranges['calendario']
         if 'min' in range_data and pd.notna(range_data['min']):
@@ -277,10 +277,15 @@ def get_periodo_info(date_ranges):
     periodo_min = min(all_mins)
     periodo_max = max(all_maxs)
     
+    # Formata nome do mês em português
+    meses_pt = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 
+               'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
+    mes_nome = meses_pt[periodo_min.month - 1]
+    
     return {
         'inicio': periodo_min,
         'fim': periodo_max,
-        'mes_ano': periodo_min.strftime("%B/%Y").capitalize(),
+        'mes_ano': f"{mes_nome}/{periodo_min.year}",
         'dias_totais': (periodo_max - periodo_min).days + 1
     }
 
@@ -960,6 +965,7 @@ def render_agenda_eventos(data, periodo_info=None):
     
     # Converte DATA para datetime
     try:
+        calendario_df = calendario_df.copy()
         calendario_df['DATA_DT'] = pd.to_datetime(calendario_df[date_col], errors='coerce')
         calendario_df = calendario_df.dropna(subset=['DATA_DT'])
     except Exception:
@@ -971,11 +977,24 @@ def render_agenda_eventos(data, periodo_info=None):
         mes_ano_exibicao = periodo_info['mes_ano']
         data_inicio = periodo_info['inicio']
         data_fim = periodo_info['fim']
+        
+        # FILTRA calendário pelo período dos dados reais (OCUPAÇÃO/NÃO_REGÊNCIA)
+        calendario_df = calendario_df[
+            (calendario_df['DATA_DT'] >= data_inicio) & 
+            (calendario_df['DATA_DT'] <= data_fim)
+        ]
+        
+        st.info(f"📊 **Período dos dados:** {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')} ({periodo_info['dias_totais']} dias)")
     else:
         # Extrai dos dados do calendário
         data_inicio = calendario_df['DATA_DT'].min()
         data_fim = calendario_df['DATA_DT'].max()
         mes_ano_exibicao = data_inicio.strftime("%B/%Y").capitalize()
+    
+    if len(calendario_df) == 0:
+        st.warning(f"⚠️ Nenhum evento encontrado no período de {data_inicio.strftime('%d/%m')} a {data_fim.strftime('%d/%m/%Y')}.")
+        st.info("💡 Dica: Verifique se a aba CALENDÁRIO contém eventos dentro do período dos dados de OCUPAÇÃO.")
+        return
     
     st.subheader(f"📆 {mes_ano_exibicao}")
     
