@@ -162,7 +162,8 @@ def load_excel_data(file_path):
             'DISCIPLINAS': ['DISCIPLINAS', 'APOIO_DISCIPLINA'],
             'AMBIENTES': ['AMBIENTES'],
             'FALTAS': ['FALTAS'],
-            'PARÂMETROS': ['PARÂMETROS', 'PARAMETROS']
+            'PARÂMETROS': ['PARÂMETROS', 'PARAMETROS'],
+            'CALENDÁRIO': ['CALENDÁRIO', 'CALENDARIO']
         }
         
         available_sheets = xl.sheet_names
@@ -780,6 +781,161 @@ def render_relatorios_detalhados(data):
             )
 
 
+def render_agenda_eventos(data):
+    """Renderiza página Agenda de Eventos do Mês"""
+    st.header("📅 Agenda de Eventos do Mês")
+    
+    calendario_df = data.get('CALENDÁRIO', pd.DataFrame())
+    
+    if calendario_df is None or len(calendario_df) == 0:
+        st.warning("Nenhum dado de Calendário disponível.")
+        return
+    
+    # Verifica colunas necessárias
+    required_cols = ['DATA', 'DIA_SEMANA', 'MÊS', 'ANO', 'TIPO_DIA', 'DESCRICAO']
+    missing_cols = [col for col in required_cols if col not in calendario_df.columns]
+    
+    if missing_cols:
+        st.warning(f"Colunas faltando no Calendário: {', '.join(missing_cols)}")
+        return
+    
+    # Converte DATA para datetime
+    try:
+        calendario_df['DATA_DT'] = pd.to_datetime(calendario_df['DATA'], errors='coerce')
+    except Exception:
+        st.warning("Erro ao converter datas do Calendário.")
+        return
+    
+    # Filtro por mês atual selecionado
+    mes_selecionado = calendario_df['MÊS'].iloc[0] if len(calendario_df) > 0 else ""
+    ano_selecionado = calendario_df['ANO'].iloc[0] if len(calendario_df) > 0 else ""
+    
+    st.subheader(f"📆 {mes_selecionado.capitalize()} de {ano_selecionado}")
+    
+    # Filtros interativos
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        tipo_dia_options = calendario_df['TIPO_DIA'].dropna().unique().tolist()
+        tipo_filtro = st.multiselect(
+            "Tipo de Dia:",
+            tipo_dia_options,
+            default=tipo_dia_options
+        )
+    
+    with col2:
+        mostrar_somente_eventos = st.checkbox("Mostrar apenas Eventos/Visitas/Reuniões", value=False)
+    
+    with col3:
+        mostrar_dias_uteis = st.checkbox("Ocultar dias não úteis", value=False)
+    
+    # Aplica filtros
+    filtered_df = calendario_df.copy()
+    
+    if tipo_filtro:
+        filtered_df = filtered_df[filtered_df['TIPO_DIA'].isin(tipo_filtro)]
+    
+    if mostrar_somente_eventos:
+        eventos_tipos = ['Evento', 'Visita', 'Reunião']
+        filtered_df = filtered_df[filtered_df['TIPO_DIA'].isin(eventos_tipos)]
+    
+    if mostrar_dias_uteis:
+        if 'DIA_UTIL' in filtered_df.columns:
+            filtered_df = filtered_df[filtered_df['DIA_UTIL'] == 'SIM']
+    
+    # Ordena por data
+    filtered_df = filtered_df.sort_values('DATA_DT')
+    
+    st.divider()
+    
+    # KPIs do mês
+    kpi_cols = st.columns(4)
+    
+    total_dias = len(calendario_df)
+    dias_uteis = len(calendario_df[calendario_df['DIA_UTIL'] == 'SIM']) if 'DIA_UTIL' in calendario_df.columns else 0
+    qtd_eventos = len(calendario_df[calendario_df['TIPO_DIA'].isin(['Evento', 'Visita', 'Reunião'])])
+    qtd_feriados = len(calendario_df[calendario_df['TIPO_DIA'] == 'Feriado']) if 'TIPO_DIA' in calendario_df.columns else 0
+    
+    kpi_cols[0].metric("Total Dias", total_dias)
+    kpi_cols[1].metric("Dias Úteis", dias_uteis)
+    kpi_cols[2].metric("Eventos/Visitas/Reuniões", qtd_eventos)
+    kpi_cols[3].metric("Feriados/Recessos", qtd_feriados)
+    
+    st.divider()
+    
+    # Visualização principal - Tabela de eventos
+    st.subheader("📋 Lista de Eventos e Ocorrências")
+    
+    # Seleciona colunas para exibição
+    display_cols = ['DATA_DT', 'DIA_SEMANA', 'TIPO_DIA', 'DESCRICAO']
+    if 'DIA_UTIL' in filtered_df.columns:
+        display_cols.append('DIA_UTIL')
+    
+    display_df = filtered_df[display_cols].copy()
+    display_df.columns = ['Data', 'Dia da Semana', 'Tipo', 'Descrição'] + (['Dia Útil'] if 'Dia Útil' in display_df.columns else [])
+    
+    # Formata data para exibição
+    display_df['Data'] = display_df['Data'].dt.strftime('%d/%m/%Y')
+    
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    
+    st.divider()
+    
+    # Gráfico - Distribuição de eventos por tipo
+    st.subheader("📊 Distribuição de Eventos por Tipo")
+    
+    if len(filtered_df) > 0 and 'TIPO_DIA' in filtered_df.columns:
+        tipo_counts = filtered_df['TIPO_DIA'].value_counts().reset_index()
+        tipo_counts.columns = ['TIPO_DIA', 'QUANTIDADE']
+        
+        fig_pie = px.pie(
+            tipo_counts,
+            values='QUANTIDADE',
+            names='TIPO_DIA',
+            title='Distribuição de Tipos de Dia',
+            color_discrete_sequence=px.colors.qualitative.Set3
+        )
+        st.plotly_chart(fig_pie, use_container_width=True)
+    
+    st.divider()
+    
+    # Timeline de eventos importantes
+    st.subheader("🗓️ Timeline de Eventos Importantes")
+    
+    eventos_importantes = calendario_df[calendario_df['TIPO_DIA'].isin(['Evento', 'Visita', 'Reunião', 'Feriado'])]
+    eventos_importantes = eventos_importantes.sort_values('DATA_DT')
+    
+    if len(eventos_importantes) > 0:
+        for _, row in eventos_importantes.iterrows():
+            data_fmt = row['DATA_DT'].strftime('%d/%m/%Y') if pd.notna(row['DATA_DT']) else 'N/A'
+            tipo_badge = row['TIPO_DIA'] if pd.notna(row['TIPO_DIA']) else 'Sem classificação'
+            descricao = row['DESCRICAO'] if pd.notna(row['DESCRICAO']) else 'Sem descrição'
+            
+            # Cores diferentes por tipo
+            color_map = {
+                'Feriado': '🔴',
+                'Recesso': '🟠',
+                'Evento': '🟢',
+                'Visita': '🔵',
+                'Reunião': '🟣'
+            }
+            icon = color_map.get(tipo_badge, '⚪')
+            
+            st.markdown(f"**{icon} {data_fmt} - {tipo_badge}**")
+            st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;{descricao}")
+            st.markdown("---")
+    
+    # Download CSV
+    st.divider()
+    csv_data = format_dataframe_for_csv(filtered_df)
+    st.download_button(
+        label="📥 Baixar Calendário (CSV)",
+        data=csv_data,
+        file_name="calendario.csv",
+        mime="text/csv"
+    )
+
+
 def handle_upload():
     """Gerencia upload de planilha"""
     st.sidebar.subheader("📤 Upload de Planilha")
@@ -891,7 +1047,8 @@ def main():
                 "👥 Análise de Docentes (RH)",
                 "🏢 Ocupação e Ambientes",
                 "📈 Evolução Histórica",
-                "📑 Relatórios Detalhados"
+                "📑 Relatórios Detalhados",
+                "📅 Agenda de Eventos"
             ],
             label_visibility="collapsed"
         )
@@ -916,6 +1073,8 @@ def main():
                 render_evolucao_historica()
             elif page == "📑 Relatórios Detalhados":
                 render_relatorios_detalhados(data)
+            elif page == "📅 Agenda de Eventos":
+                render_agenda_eventos(data)
         
         except Exception as e:
             st.error(f"Erro ao carregar dados: {str(e)}")
