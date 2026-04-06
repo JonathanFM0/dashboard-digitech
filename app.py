@@ -114,22 +114,44 @@ def init_historico_dir():
 
 
 def get_available_months():
-    """Retorna lista de meses disponíveis no histórico"""
+    """Retorna lista de meses disponíveis no histórico com informações de período"""
     init_historico_dir()
     months = []
+    
+    # Processa arquivos na pasta historico_dados
     for f in HISTORICO_DIR.glob("*.xlsx"):
         try:
-            # Extrai nome do mês do nome do arquivo
-            month_name = f.stem.replace("_", " ").replace("-", " ")
-            months.append((f.name, month_name))
+            # Carrega dados para extrair período
+            data = load_excel_data(str(f))
+            date_ranges = extract_date_range(data)
+            periodo_info = get_periodo_info(date_ranges)
+            
+            if periodo_info:
+                month_name = f"{periodo_info['mes_ano']} ({f.stem})"
+                months.append((f.name, month_name, periodo_info))
+            else:
+                # Fallback para nome do arquivo
+                month_name = f.stem.replace("_", " ").replace("-", " ")
+                months.append((f.name, month_name, None))
         except Exception:
             continue
     
     # Adiciona arquivos na raiz também
     for f in Path(".").glob("*.xlsx"):
         if "Consolidado" in f.name or "Status" in f.name:
-            month_name = f.stem.replace("_", " ").replace("-", " ")
-            months.append((str(f), month_name))
+            try:
+                data = load_excel_data(str(f))
+                date_ranges = extract_date_range(data)
+                periodo_info = get_periodo_info(date_ranges)
+                
+                if periodo_info:
+                    month_name = f"{periodo_info['mes_ano']} ({f.stem})"
+                    months.append((str(f), month_name, periodo_info))
+                else:
+                    month_name = f.stem.replace("_", " ").replace("-", " ")
+                    months.append((str(f), month_name, None))
+            except Exception:
+                continue
     
     return sorted(months, key=lambda x: x[1], reverse=True)
 
@@ -145,6 +167,122 @@ def extract_month_from_data(df_ocupacao):
     except Exception:
         pass
     return datetime.now().strftime("%Y-%m")
+
+
+def extract_date_range(data):
+    """Extrai intervalo de datas de todos os dataframes relevantes"""
+    date_ranges = {}
+    
+    # Verifica OCUPAÇÃO
+    if 'OCUPAÇÃO' in data and data['OCUPAÇÃO'] is not None and len(data['OCUPAÇÃO']) > 0:
+        df = data['OCUPAÇÃO']
+        if 'DATA' in df.columns:
+            try:
+                data_col = pd.to_datetime(df['DATA'], errors='coerce')
+                valid_dates = data_col.dropna()
+                if len(valid_dates) > 0:
+                    date_ranges['ocupacao'] = {
+                        'min': valid_dates.min(),
+                        'max': valid_dates.max()
+                    }
+            except Exception:
+                pass
+    
+    # Verifica FALTAS
+    if 'FALTAS' in data and data['FALTAS'] is not None and len(data['FALTAS']) > 0:
+        df = data['FALTAS']
+        if 'DATA_FALTA' in df.columns:
+            try:
+                data_col = pd.to_datetime(df['DATA_FALTA'], errors='coerce')
+                valid_dates = data_col.dropna()
+                if len(valid_dates) > 0:
+                    date_ranges['faltas'] = {
+                        'min': valid_dates.min(),
+                        'max': valid_dates.max()
+                    }
+            except Exception:
+                pass
+    
+    # Verifica NÃO_REGÊNCIA
+    if 'NÃO_REGÊNCIA' in data and data['NÃO_REGÊNCIA'] is not None and len(data['NÃO_REGÊNCIA']) > 0:
+        df = data['NÃO_REGÊNCIA']
+        if 'DATA_INICIO' in df.columns and 'DATA_FIM' in df.columns:
+            try:
+                inicio_col = pd.to_datetime(df['DATA_INICIO'], errors='coerce')
+                fim_col = pd.to_datetime(df['DATA_FIM'], errors='coerce')
+                valid_inicio = inicio_col.dropna()
+                valid_fim = fim_col.dropna()
+                if len(valid_inicio) > 0 or len(valid_fim) > 0:
+                    all_dates = pd.concat([valid_inicio, valid_fim])
+                    date_ranges['nao_regencia'] = {
+                        'min': all_dates.min(),
+                        'max': all_dates.max()
+                    }
+            except Exception:
+                pass
+    
+    # Verifica CALENDÁRIO
+    if 'CALENDÁRIO' in data and data['CALENDÁRIO'] is not None and len(data['CALENDÁRIO']) > 0:
+        df = data['CALENDÁRIO']
+        date_cols = [col for col in df.columns if 'DATA' in col.upper() or 'DATE' in col.upper()]
+        if date_cols:
+            try:
+                all_dates = pd.Series()
+                for col in date_cols:
+                    data_col = pd.to_datetime(df[col], errors='coerce')
+                    valid_dates = data_col.dropna()
+                    all_dates = pd.concat([all_dates, valid_dates])
+                if len(all_dates) > 0:
+                    date_ranges['calendario'] = {
+                        'min': all_dates.min(),
+                        'max': all_dates.max()
+                    }
+            except Exception:
+                pass
+    
+    return date_ranges
+
+
+def get_periodo_info(date_ranges):
+    """Gera informações formatadas sobre o período dos dados"""
+    if not date_ranges:
+        return None
+    
+    all_mins = []
+    all_maxs = []
+    
+    # Prioriza ocupacao e nao_regencia (dados reais do mês)
+    # Calendário é apenas referência anual
+    priority_sources = ['ocupacao', 'nao_regencia', 'faltas']
+    
+    for source in priority_sources:
+        if source in date_ranges:
+            range_data = date_ranges[source]
+            if 'min' in range_data and pd.notna(range_data['min']):
+                all_mins.append(range_data['min'])
+            if 'max' in range_data and pd.notna(range_data['max']):
+                all_maxs.append(range_data['max'])
+    
+    # Se não houver dados prioritários, usa calendário
+    if not all_mins and 'calendario' in date_ranges:
+        range_data = date_ranges['calendario']
+        if 'min' in range_data and pd.notna(range_data['min']):
+            all_mins.append(range_data['min'])
+        if 'max' in range_data and pd.notna(range_data['max']):
+            all_maxs.append(range_data['max'])
+    
+    if not all_mins or not all_maxs:
+        return None
+    
+    periodo_min = min(all_mins)
+    periodo_max = max(all_maxs)
+    
+    return {
+        'inicio': periodo_min,
+        'fim': periodo_max,
+        'mes_ano': periodo_min.strftime("%B/%Y").capitalize(),
+        'dias_totais': (periodo_max - periodo_min).days + 1
+    }
 
 
 def load_excel_data(file_path):
@@ -781,9 +919,9 @@ def render_relatorios_detalhados(data):
             )
 
 
-def render_agenda_eventos(data):
+def render_agenda_eventos(data, periodo_info=None):
     """Renderiza página Agenda de Eventos do Mês"""
-    st.header("📅 Agenda de Eventos do Mês")
+    st.header("📅 Agenda de Eventos")
     
     calendario_df = data.get('CALENDÁRIO', pd.DataFrame())
     
@@ -791,32 +929,61 @@ def render_agenda_eventos(data):
         st.warning("Nenhum dado de Calendário disponível.")
         return
     
-    # Verifica colunas necessárias
-    required_cols = ['DATA', 'DIA_SEMANA', 'MÊS', 'ANO', 'TIPO_DIA', 'DESCRICAO']
-    missing_cols = [col for col in required_cols if col not in calendario_df.columns]
+    # Verifica colunas necessárias (com variações de nomes)
+    possible_date_cols = ['DATA', 'DATA_EVENTO', 'DATE']
+    date_col = None
+    for col in possible_date_cols:
+        if col in calendario_df.columns:
+            date_col = col
+            break
     
-    if missing_cols:
-        st.warning(f"Colunas faltando no Calendário: {', '.join(missing_cols)}")
+    if not date_col:
+        st.warning("Coluna de DATA não encontrada no Calendário.")
+        return
+    
+    # Identifica colunas disponíveis
+    tipo_dia_col = None
+    for col in ['TIPO_DIA', 'TIPO', 'CATEGORIA']:
+        if col in calendario_df.columns:
+            tipo_dia_col = col
+            break
+    
+    descricao_col = None
+    for col in ['DESCRICAO', 'DESCRIÇÃO', 'DESCRIPTION', 'EVENTO']:
+        if col in calendario_df.columns:
+            descricao_col = col
+            break
+    
+    if not tipo_dia_col:
+        st.warning("Coluna de TIPO_DIA não encontrada no Calendário.")
         return
     
     # Converte DATA para datetime
     try:
-        calendario_df['DATA_DT'] = pd.to_datetime(calendario_df['DATA'], errors='coerce')
+        calendario_df['DATA_DT'] = pd.to_datetime(calendario_df[date_col], errors='coerce')
+        calendario_df = calendario_df.dropna(subset=['DATA_DT'])
     except Exception:
         st.warning("Erro ao converter datas do Calendário.")
         return
     
-    # Filtro por mês atual selecionado
-    mes_selecionado = calendario_df['MÊS'].iloc[0] if len(calendario_df) > 0 else ""
-    ano_selecionado = calendario_df['ANO'].iloc[0] if len(calendario_df) > 0 else ""
+    # Usa período_info se disponível, senão extrai dos dados
+    if periodo_info and 'inicio' in periodo_info and 'fim' in periodo_info:
+        mes_ano_exibicao = periodo_info['mes_ano']
+        data_inicio = periodo_info['inicio']
+        data_fim = periodo_info['fim']
+    else:
+        # Extrai dos dados do calendário
+        data_inicio = calendario_df['DATA_DT'].min()
+        data_fim = calendario_df['DATA_DT'].max()
+        mes_ano_exibicao = data_inicio.strftime("%B/%Y").capitalize()
     
-    st.subheader(f"📆 {mes_selecionado.capitalize()} de {ano_selecionado}")
+    st.subheader(f"📆 {mes_ano_exibicao}")
     
     # Filtros interativos
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        tipo_dia_options = calendario_df['TIPO_DIA'].dropna().unique().tolist()
+        tipo_dia_options = calendario_df[tipo_dia_col].dropna().unique().tolist()
         tipo_filtro = st.multiselect(
             "Tipo de Dia:",
             tipo_dia_options,
@@ -824,6 +991,7 @@ def render_agenda_eventos(data):
         )
     
     with col2:
+        eventos_tipos = [t for t in tipo_dia_options if any(x in str(t).lower() for x in ['evento', 'visita', 'reunião', 'reuniao'])]
         mostrar_somente_eventos = st.checkbox("Mostrar apenas Eventos/Visitas/Reuniões", value=False)
     
     with col3:
@@ -833,15 +1001,16 @@ def render_agenda_eventos(data):
     filtered_df = calendario_df.copy()
     
     if tipo_filtro:
-        filtered_df = filtered_df[filtered_df['TIPO_DIA'].isin(tipo_filtro)]
+        filtered_df = filtered_df[filtered_df[tipo_dia_col].isin(tipo_filtro)]
     
-    if mostrar_somente_eventos:
-        eventos_tipos = ['Evento', 'Visita', 'Reunião']
-        filtered_df = filtered_df[filtered_df['TIPO_DIA'].isin(eventos_tipos)]
+    if mostrar_somente_eventos and eventos_tipos:
+        filtered_df = filtered_df[filtered_df[tipo_dia_col].isin(eventos_tipos)]
     
     if mostrar_dias_uteis:
         if 'DIA_UTIL' in filtered_df.columns:
-            filtered_df = filtered_df[filtered_df['DIA_UTIL'] == 'SIM']
+            filtered_df = filtered_df[filtered_df['DIA_UTIL'].astype(str).str.upper() == 'SIM']
+        elif 'UTIL' in filtered_df.columns:
+            filtered_df = filtered_df[filtered_df['UTIL'].astype(str).str.upper() == 'SIM']
     
     # Ordena por data
     filtered_df = filtered_df.sort_values('DATA_DT')
@@ -852,9 +1021,9 @@ def render_agenda_eventos(data):
     kpi_cols = st.columns(4)
     
     total_dias = len(calendario_df)
-    dias_uteis = len(calendario_df[calendario_df['DIA_UTIL'] == 'SIM']) if 'DIA_UTIL' in calendario_df.columns else 0
-    qtd_eventos = len(calendario_df[calendario_df['TIPO_DIA'].isin(['Evento', 'Visita', 'Reunião'])])
-    qtd_feriados = len(calendario_df[calendario_df['TIPO_DIA'] == 'Feriado']) if 'TIPO_DIA' in calendario_df.columns else 0
+    dias_uteis = len(calendario_df[calendario_df['DIA_UTIL'].astype(str).str.upper() == 'SIM']) if 'DIA_UTIL' in calendario_df.columns else 0
+    qtd_eventos = len(calendario_df[calendario_df[tipo_dia_col].astype(str).str.lower().str.contains('evento|visita|reuni', na=False)]) if tipo_dia_col else 0
+    qtd_feriados = len(calendario_df[calendario_df[tipo_dia_col].astype(str).str.lower().str.contains('feriado|recesso', na=False)]) if tipo_dia_col else 0
     
     kpi_cols[0].metric("Total Dias", total_dias)
     kpi_cols[1].metric("Dias Úteis", dias_uteis)
@@ -867,71 +1036,77 @@ def render_agenda_eventos(data):
     st.subheader("📋 Lista de Eventos e Ocorrências")
     
     # Seleciona colunas para exibição
-    display_cols = ['DATA_DT', 'DIA_SEMANA', 'TIPO_DIA', 'DESCRICAO']
+    display_cols = ['DATA_DT', tipo_dia_col]
+    if descricao_col:
+        display_cols.append(descricao_col)
+    if 'DIA_SEMANA' in filtered_df.columns:
+        display_cols.insert(1, 'DIA_SEMANA')
     if 'DIA_UTIL' in filtered_df.columns:
         display_cols.append('DIA_UTIL')
     
     display_df = filtered_df[display_cols].copy()
-    display_df.columns = ['Data', 'Dia da Semana', 'Tipo', 'Descrição'] + (['Dia Útil'] if 'Dia Útil' in display_df.columns else [])
+    
+    # Renomeia colunas para exibição
+    col_names = {
+        'DATA_DT': 'Data',
+        'DIA_SEMANA': 'Dia da Semana',
+        tipo_dia_col: 'Tipo',
+        'DESCRICAO': 'Descrição',
+        'DESCRIÇÃO': 'Descrição',
+        'EVENTO': 'Descrição',
+        'DIA_UTIL': 'Dia Útil'
+    }
+    display_df.rename(columns={k: v for k, v in col_names.items() if k in display_df.columns}, inplace=True)
     
     # Formata data para exibição
-    display_df['Data'] = display_df['Data'].dt.strftime('%d/%m/%Y')
+    if 'Data' in display_df.columns:
+        display_df['Data'] = display_df['Data'].dt.strftime('%d/%m/%Y')
     
     st.dataframe(display_df, use_container_width=True, hide_index=True)
     
     st.divider()
     
-    # Gráfico - Distribuição de eventos por tipo
-    st.subheader("📊 Distribuição de Eventos por Tipo")
+    # Gráfico de distribuição de tipos
+    st.subheader("📊 Distribuição de Tipos de Dia")
     
-    if len(filtered_df) > 0 and 'TIPO_DIA' in filtered_df.columns:
-        tipo_counts = filtered_df['TIPO_DIA'].value_counts().reset_index()
-        tipo_counts.columns = ['TIPO_DIA', 'QUANTIDADE']
-        
-        fig_pie = px.pie(
-            tipo_counts,
-            values='QUANTIDADE',
-            names='TIPO_DIA',
-            title='Distribuição de Tipos de Dia',
+    if tipo_dia_col and len(filtered_df) > 0:
+        fig_pizza = px.pie(
+            filtered_df,
+            names=tipo_dia_col,
+            title='Distribuição por Tipo de Dia',
+            hole=0.4,
             color_discrete_sequence=px.colors.qualitative.Set3
         )
-        st.plotly_chart(fig_pie, use_container_width=True)
+        fig_pizza.update_layout(height=400)
+        st.plotly_chart(fig_pizza, use_container_width=True)
     
-    st.divider()
+    # Timeline visual de eventos importantes
+    st.subheader("🗓️ Timeline de Eventos")
     
-    # Timeline de eventos importantes
-    st.subheader("🗓️ Timeline de Eventos Importantes")
-    
-    eventos_importantes = calendario_df[calendario_df['TIPO_DIA'].isin(['Evento', 'Visita', 'Reunião', 'Feriado'])]
-    eventos_importantes = eventos_importantes.sort_values('DATA_DT')
+    eventos_importantes = calendario_df[calendario_df[tipo_dia_col].astype(str).str.lower().str.contains('evento|visita|reuni|feriado|recesso', na=False)] if tipo_dia_col else pd.DataFrame()
     
     if len(eventos_importantes) > 0:
+        timeline_data = []
         for _, row in eventos_importantes.iterrows():
-            data_fmt = row['DATA_DT'].strftime('%d/%m/%Y') if pd.notna(row['DATA_DT']) else 'N/A'
-            tipo_badge = row['TIPO_DIA'] if pd.notna(row['TIPO_DIA']) else 'Sem classificação'
-            descricao = row['DESCRICAO'] if pd.notna(row['DESCRICAO']) else 'Sem descrição'
-            
-            # Cores diferentes por tipo
-            color_map = {
-                'Feriado': '🔴',
-                'Recesso': '🟠',
-                'Evento': '🟢',
-                'Visita': '🔵',
-                'Reunião': '🟣'
-            }
-            icon = color_map.get(tipo_badge, '⚪')
-            
-            st.markdown(f"**{icon} {data_fmt} - {tipo_badge}**")
-            st.markdown(f"&nbsp;&nbsp;&nbsp;&nbsp;{descricao}")
-            st.markdown("---")
+            tipo = str(row.get(tipo_dia_col, '')).lower()
+            icon = '🔴' if 'feriado' in tipo else '🟠' if 'recesso' in tipo else '🟢' if 'evento' in tipo else '🔵' if 'visita' in tipo else '🟣' if 'reuni' in tipo else '⚪'
+            descricao = row.get(descricao_col, '') if descricao_col else ''
+            timeline_data.append({
+                'Data': row['DATA_DT'].strftime('%d/%m'),
+                'Evento': f"{icon} {row.get(tipo_dia_col, '')}: {descricao}" if descricao else f"{icon} {row.get(tipo_dia_col, '')}",
+                'Tipo': row.get(tipo_dia_col, '')
+            })
+        
+        timeline_df = pd.DataFrame(timeline_data)
+        st.dataframe(timeline_df[['Data', 'Evento']], use_container_width=True, hide_index=True)
     
-    # Download CSV
+    # Exportação CSV
     st.divider()
-    csv_data = format_dataframe_for_csv(filtered_df)
+    csv_data = format_dataframe_for_csv(display_df)
     st.download_button(
         label="📥 Baixar Calendário (CSV)",
         data=csv_data,
-        file_name="calendario.csv",
+        file_name=f"calendario_{mes_ano_exibicao.replace('/', '-')}.csv",
         mime="text/csv"
     )
 
@@ -1015,13 +1190,18 @@ def main():
         months = get_available_months()
         
         if months:
-            month_options = {name: path for path, name in months}
+            # Cria dicionário com caminho completo (path, nome_display, periodo_info)
+            month_options = {name: (path, periodo) for path, name, periodo in months}
             selected_name = st.selectbox(
                 "Mês de análise:",
                 list(month_options.keys()),
                 index=0
             )
-            selected_file = month_options[selected_name]
+            selected_file, periodo_info = month_options[selected_name]
+            
+            # Mostra informações do período selecionado
+            if periodo_info:
+                st.info(f"📊 **Período:** {periodo_info['inicio'].strftime('%d/%m/%Y')} a {periodo_info['fim'].strftime('%d/%m/%Y')} ({periodo_info['dias_totais']} dias)")
             
             if selected_file != st.session_state.get('current_file'):
                 st.session_state.current_file = selected_file
@@ -1030,6 +1210,7 @@ def main():
         else:
             st.warning("Nenhum arquivo disponível.")
             selected_file = None
+            periodo_info = None
         
         st.divider()
         
@@ -1074,7 +1255,7 @@ def main():
             elif page == "📑 Relatórios Detalhados":
                 render_relatorios_detalhados(data)
             elif page == "📅 Agenda de Eventos":
-                render_agenda_eventos(data)
+                render_agenda_eventos(data, periodo_info)
         
         except Exception as e:
             st.error(f"Erro ao carregar dados: {str(e)}")
